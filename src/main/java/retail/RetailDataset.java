@@ -1,29 +1,20 @@
 package retail;
 
 import org.apache.spark.sql.Dataset;
-import org.apache.spark.sql.Row;
 
 import java.nio.file.Path;
 
 /**
  * Контракт между DE, QA и AN для датасета Online Retail (UCI).
- * DE реализует load + rows; QA тестирует валидатор и схему; AN собирает запросы через Spark API.
- *
- * Схема, которую возвращает rows():
- *   InvoiceNo    string
- *   StockCode    string
- *   Description  string
- *   Quantity     int
- *   InvoiceDate  timestamp
- *   UnitPrice    decimal(10,2)
- *   CustomerID   string   (nullable)
- *   Country      string
+ * DE реализует load + rows (внутри — Encoders.bean(RetailRow.class)).
+ * QA тестирует валидатор и то, что типы полей совпадают с RetailRow.
+ * AN собирает запросы через Spark API — типы и имена колонок видны в IDE.
  */
 public interface RetailDataset {
 
     /** Загрузка и валидация CSV. Невалидные строки отбрасываются по правилам, согласованным с QA. */
     void load(Path csv);
 
-    /** Все валидные строки датасета в виде Spark Dataset. */
-    Dataset<Row> rows();
+    /** Все валидные строки датасета, типизированные как RetailRow. */
+    Dataset<RetailRow> rows();
 }
