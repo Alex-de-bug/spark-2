@@ -8,7 +8,7 @@ import java.nio.file.Path;
 
 import static org.apache.spark.sql.functions.col;
 
-/** Прогон запросов из задания через RetailAnalytics. */
+/** Прогон запросов из задания через RetailAnalytics + выгрузка в CSV. */
 public class Main {
 
     public static void main(String[] args) {
@@ -19,9 +19,11 @@ public class Main {
                 .getOrCreate();
         spark.sparkContext().setLogLevel("WARN");
 
-        String path = args.length > 0 ? args[0] : "/data/sample.csv";
+        String input  = args.length > 0 ? args[0] : "/data/data.csv";
+        String outDir = args.length > 1 ? args[1] : "/data/out";
+
         RetailDataset dataset = new RetailDatasetImpl(spark);
-        dataset.load(Path.of(path));
+        dataset.load(Path.of(input));
 
         RetailAnalytics analytics = new RetailAnalyticsImpl();
 
@@ -34,6 +36,10 @@ public class Main {
         System.out.println("=== customer stats (top-10 by totalSpent) ===");
         Dataset<Row> stats = analytics.getCustomerStats(dataset);
         stats.orderBy(col("totalSpent").desc()).show(10, false);
+
+        analytics.exportToCsv(top5.coalesce(1), outDir + "/top5");
+        analytics.exportToCsv(stats.coalesce(1), outDir + "/customer-stats");
+        System.out.println("=== saved to " + outDir + "/{top5, customer-stats} ===");
 
         spark.stop();
     }
