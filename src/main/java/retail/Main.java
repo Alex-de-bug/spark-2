@@ -1,15 +1,14 @@
 package retail;
 
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
 
 import java.nio.file.Path;
 
 import static org.apache.spark.sql.functions.col;
-import static org.apache.spark.sql.functions.collect_set;
-import static org.apache.spark.sql.functions.size;
-import static org.apache.spark.sql.functions.sum;
 
-/** Прогон запросов из задания: топ-5 товаров и статистика по клиентам. */
+/** Прогон запросов из задания через RetailAnalytics. */
 public class Main {
 
     public static void main(String[] args) {
@@ -24,28 +23,17 @@ public class Main {
         RetailDataset dataset = new RetailDatasetImpl(spark);
         dataset.load(Path.of(path));
 
-        long total = dataset.rows().count();
-        System.out.println("=== valid rows: " + total + " ===");
+        RetailAnalytics analytics = new RetailAnalyticsImpl();
+
+        System.out.println("=== valid rows: " + dataset.rows().count() + " ===");
 
         System.out.println("=== top-5 products ===");
-        dataset.rows()
-                .groupBy("stockCode", "description")
-                .agg(sum("quantity").alias("total"))
-                .orderBy(col("total").desc())
-                .limit(5)
-                .show(false);
+        Dataset<Row> top5 = analytics.getTopProducts(dataset, 5);
+        top5.show(false);
 
         System.out.println("=== customer stats (top-10 by totalSpent) ===");
-        dataset.rows()
-                .withColumn("lineTotal", col("quantity").multiply(col("unitPrice")))
-                .groupBy("customerId")
-                .agg(
-                        size(collect_set(col("invoiceNo"))).alias("orders"),
-                        sum("lineTotal").alias("totalSpent"))
-                .withColumn("avgOrderValue", col("totalSpent").divide(col("orders")))
-                .orderBy(col("totalSpent").desc())
-                .limit(10)
-                .show(false);
+        Dataset<Row> stats = analytics.getCustomerStats(dataset);
+        stats.orderBy(col("totalSpent").desc()).show(10, false);
 
         spark.stop();
     }
