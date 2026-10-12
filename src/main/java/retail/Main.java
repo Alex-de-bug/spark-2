@@ -41,6 +41,7 @@ public class Main {
         analytics.exportToCsv(stats.coalesce(1), outDir + "/customer-stats");
         System.out.println("=== saved to " + outDir + "/{top5, customer-stats} ===");
 
+        
         spark.stop();
     }
 }
