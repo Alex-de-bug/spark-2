@@ -39,7 +39,7 @@ class RetailDatasetImplTest {
 
     @AfterEach
     void releaseDataset() {
-        if (dataset != null) dataset.rows().unpersist();
+        spark.catalog().clearCache();
     }
 
     @AfterAll
@@ -53,6 +53,8 @@ class RetailDatasetImplTest {
             "4, 2/30/2010 8:26", "5, -0.01", "5, ''", "5, abc"})
     void rejectsInvalidRequiredField(int field, String value) throws IOException {
         String[] invalid = validFields();
+        // Разные ключи не позволяют дедупликации скрыть ошибку фильтрации.
+        invalid[0] = "536366";
         invalid[field] = value;
         List<RetailRow> rows = load(String.join(",", invalid), String.join(",", validFields()));
         assertEquals(1, rows.size());
@@ -60,7 +62,8 @@ class RetailDatasetImplTest {
     }
 
     @ParameterizedTest
-    @CsvSource({"0, 0", "-1, 0.75"})
+    @CsvSource({"0, 2.55", "-1, 2.55", "6, 0", "6, 0.75",
+            "2147483647, 2.55", "-2147483648, 2.55"})
     void acceptsZeroAndNegativeQuantityAndNonnegativePrice(int quantity, String price)
             throws IOException {
         String[] fields = validFields();
@@ -89,10 +92,38 @@ class RetailDatasetImplTest {
     void preservesCancellationInvoice() throws IOException {
         String[] fields = validFields();
         fields[0] = "C536365";
-        fields[3] = "-6";
         List<RetailRow> rows = load(String.join(",", fields));
         assertEquals(1, rows.size());
         assertEquals("C536365", rows.get(0).getInvoiceNo());
+    }
+
+    @Test
+    void preservesStockCodeWithLetterSuffix() throws IOException {
+        String[] fields = validFields();
+        fields[1] = "85123A";
+        List<RetailRow> rows = load(String.join(",", fields));
+        assertEquals(1, rows.size());
+        assertEquals("85123A", rows.get(0).getStockCode());
+    }
+
+    @Test
+    void rowsBeforeLoadThrows() {
+        dataset = new RetailDatasetImpl(spark);
+        assertThrows(IllegalStateException.class, dataset::rows);
+    }
+
+    @Test
+    void repeatedLoadReplacesCachedRows() throws IOException {
+        load(String.join(",", validFields()));
+        String[] replacement = validFields();
+        replacement[0] = "536366";
+        Path csv = tempDir.resolve("replacement.csv");
+        writeCsv(csv, String.join(",", replacement));
+        dataset.load(csv);
+        Files.delete(csv);
+        List<RetailRow> rows = dataset.rows().collectAsList();
+        assertEquals(1, rows.size());
+        assertEquals("536366", rows.get(0).getInvoiceNo());
     }
 
     @Test
@@ -102,7 +133,7 @@ class RetailDatasetImplTest {
         RetailRow row = rows.get(0);
         assertAll(
                 () -> assertEquals("536365", row.getInvoiceNo()),
-                () -> assertEquals("85123A", row.getStockCode()),
+                () -> assertEquals("85123", row.getStockCode()),
                 () -> assertEquals("WHITE HANGING HEART", row.getDescription()),
                 () -> assertEquals(6, row.getQuantity()),
                 () -> assertEquals(Timestamp.from(java.time.Instant.parse("2010-12-01T08:26:00Z")),
@@ -123,16 +154,20 @@ class RetailDatasetImplTest {
 
     private List<RetailRow> load(String... lines) throws IOException {
         Path csv = tempDir.resolve("retail.csv");
-        Files.writeString(csv,
-                "invoiceNo,stockCode,description,quantity,invoiceDate,unitPrice,customerId,country\n"
-                        + String.join("\n", lines) + "\n");
+        writeCsv(csv, lines);
         dataset = new RetailDatasetImpl(spark);
         dataset.load(csv);
         return dataset.rows().collectAsList();
     }
 
+    private static void writeCsv(Path csv, String... lines) throws IOException {
+        Files.writeString(csv,
+                "invoiceNo,stockCode,description,quantity,invoiceDate,unitPrice,customerId,country\n"
+                        + String.join("\n", lines) + "\n");
+    }
+
     private static String[] validFields() {
-        return new String[]{"536365", "85123A", "WHITE HANGING HEART", "6",
+        return new String[]{"536365", "85123", "WHITE HANGING HEART", "6",
                 "12/1/2010 8:26", "2.55", "17850", "United Kingdom"};
     }
 }
