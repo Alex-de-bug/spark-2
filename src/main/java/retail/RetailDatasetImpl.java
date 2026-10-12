@@ -12,19 +12,29 @@ import java.nio.file.Path;
 
 import static org.apache.spark.sql.functions.col;
 import static org.apache.spark.sql.functions.length;
+import static org.apache.spark.sql.functions.lit;
+import static org.apache.spark.sql.functions.trim;
 
 /**
  * Реализация RetailDataset.
  *
- * load() запускает Spark job: читает CSV со строгой схемой, парсит дату/цену,
- * отбрасывает невалидные строки, материализует результат (.count()) и кэширует.
+ * load() запускает Spark job: читает CSV со строгой схемой, валидирует колонки
+ * под паспорт UCI Online Retail, удаляет дубликаты, материализует и кэширует.
  * rows() возвращает тот же закэшированный Dataset без повторного чтения файла.
  *
- * Правила валидации (минимум; QA расширит):
- *   - invoiceNo, stockCode, country не null и не пустые
- *   - quantity, invoiceDate не null (DROPMALFORMED отбросит нечисла и невалидные даты)
- *   - unitPrice не null и >= 0
- *   - customerId может быть null (пропускается в агрегатах уже на стороне AN)
+ * Правила валидации:
+ *   invoiceNo    not null, начинается с цифры (отбрасывает C* отмены и A* корректировки)
+ *   stockCode    строго 5 цифр ^[0-9]{5}$ (паспорт UCI; отбрасывает POST/DOT/M/AMAZONFEE/варианты с буквенным суффиксом)
+ *   description  not null, непустой после trim, не "?"
+ *   quantity     not null, > 0
+ *   invoiceDate  not null, в диапазоне [2010-12-01, 2011-12-09 23:59:59] (паспорт UCI)
+ *   unitPrice    not null, > 0
+ *   customerId   строго 5 цифр ^[0-9]{5}$ (null и опечатки отбрасываются)
+ *   country      not null, непустой
+ *
+ * Дедупликация после фильтрации:
+ *   1. полные дубликаты строк — dropDuplicates()
+ *   2. дубликаты по (invoiceNo, stockCode) — одна позиция на пару заказ×товар
  */
 public class RetailDatasetImpl implements RetailDataset {
 
@@ -37,6 +47,9 @@ public class RetailDatasetImpl implements RetailDataset {
             .add("unitPrice",   DataTypes.createDecimalType(10, 2), true)
             .add("customerId",  DataTypes.StringType,               true)
             .add("country",     DataTypes.StringType,               true);
+
+    private static final String DATE_MIN = "2010-12-01 00:00:00";
+    private static final String DATE_MAX = "2011-12-09 23:59:59";
 
     private final SparkSession spark;
     private Dataset<RetailRow> cached;
@@ -54,13 +67,23 @@ public class RetailDatasetImpl implements RetailDataset {
                 .schema(SCHEMA)
                 .csv(csv.toString());
 
-        Dataset<RetailRow> valid = raw
-                .filter(col("invoiceNo").isNotNull().and(length(col("invoiceNo")).gt(0)))
-                .filter(col("stockCode").isNotNull().and(length(col("stockCode")).gt(0)))
-                .filter(col("quantity").isNotNull())
-                .filter(col("invoiceDate").isNotNull())
-                .filter(col("unitPrice").isNotNull().and(col("unitPrice").geq(0)))
-                .filter(col("country").isNotNull().and(length(col("country")).gt(0)))
+        Dataset<Row> filtered = raw
+                .filter(col("invoiceNo").isNotNull().and(col("invoiceNo").rlike("^[0-9].*")))
+                .filter(col("stockCode").rlike("^[0-9]{5}$"))
+                .filter(col("description").isNotNull()
+                        .and(length(trim(col("description"))).gt(0))
+                        .and(trim(col("description")).notEqual("?")))
+                .filter(col("quantity").isNotNull().and(col("quantity").gt(0)))
+                .filter(col("invoiceDate").isNotNull()
+                        .and(col("invoiceDate").between(lit(DATE_MIN).cast(DataTypes.TimestampType),
+                                                        lit(DATE_MAX).cast(DataTypes.TimestampType))))
+                .filter(col("unitPrice").isNotNull().and(col("unitPrice").gt(0)))
+                .filter(col("customerId").rlike("^[0-9]{5}$"))
+                .filter(col("country").isNotNull().and(length(trim(col("country"))).gt(0)));
+
+        Dataset<RetailRow> valid = filtered
+                .dropDuplicates()
+                .dropDuplicates("invoiceNo", "stockCode")
                 .as(Encoders.bean(RetailRow.class));
 
         if (this.cached != null) {
